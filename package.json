@@ -1,10 +1,11 @@
 {
   "name": "claude-local-proxy",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Local proxy to bridge Anthropic-compatible requests to Ollama.",
+  "main": "proxy.mjs",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node proxy.mjs",
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
