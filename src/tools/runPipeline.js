@@ -1,7 +1,7 @@
-const { RunPipelineInputSchema } = require("../types");
-const { assertSafeTestCommand } = require("../security/commandGuard");
-const { resolveRepo } = require("../repo/resolveRepo");
-const { queue } = require("../queue");
+import { RunPipelineInputSchema } from "../types.js";
+import { assertSafeTestCommand } from "../security/commandGuard.js";
+import { resolveRepo } from "../repo/resolveRepo.js";
+import { queue } from "../queue.js";
 
 const fetchFn =
   typeof fetch === "function"
@@ -252,6 +252,4 @@ async function runPipeline(rawInput) {
   return queue.enqueue(() => runPipelineInternal(rawInput));
 }
 
-module.exports = {
-  runPipeline
-};
+export { runPipeline };

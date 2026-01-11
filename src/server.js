@@ -1,11 +1,11 @@
-const express = require("express");
-const { randomUUID } = require("crypto");
-const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
-const { StreamableHTTPServerTransport } = require("@modelcontextprotocol/sdk/server/streamableHttp.js");
-const { createMcpExpressApp } = require("@modelcontextprotocol/sdk/server/express.js");
-const { isInitializeRequest } = require("@modelcontextprotocol/sdk/types.js");
-const { RunPipelineInputSchema } = require("./types");
-const { runPipeline } = require("./tools/runPipeline");
+import express from "express";
+import { randomUUID } from "crypto";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { RunPipelineInputSchema } from "./types.js";
+import { runPipeline } from "./tools/runPipeline.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 7777);

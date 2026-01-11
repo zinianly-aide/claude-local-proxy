@@ -1,5 +1,5 @@
-const fs = require("fs");
-const path = require("path");
+import fs from "node:fs";
+import path from "node:path";
 
 let cachedMap = null;
 
@@ -43,7 +43,4 @@ function resolveRepo(alias) {
   return repoPath;
 }
 
-module.exports = {
-  resolveRepo,
-  loadRepoMap
-};
+export { resolveRepo, loadRepoMap };

@@ -1,4 +1,4 @@
-const z = require("zod");
+import z from "zod.js";
 
 const RunPipelineInputSchema = z.object({
   repo: z.string().min(1, "repo is required"),
@@ -16,6 +16,4 @@ const RunPipelineInputSchema = z.object({
   max_diff_lines_per_file: z.number().int().positive().max(2000).optional().default(400)
 });
 
-module.exports = {
-  RunPipelineInputSchema
-};
+export { RunPipelineInputSchema };

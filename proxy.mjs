@@ -1,6 +1,28 @@
 import express from "express";
 import fetch from "node-fetch";
 import { pathToFileURL } from "url";
+import { Queue } from "./src/queue.js";
+
+// 简单的请求速率限制实现
+const rateLimit = {
+  windowMs: 60 * 1000, // 1 minute
+  max: 100, // max requests per window
+  requests: new Map(),
+  
+  check(ip) {
+    const now = Date.now();
+    const window = Math.floor(now / this.windowMs);
+    const key = `${ip}:${window}`;
+    
+    const count = this.requests.get(key) || 0;
+    if (count >= this.max) {
+      return false;
+    }
+    
+    this.requests.set(key, count + 1);
+    return true;
+  }
+};
 
 const app = express();
 app.use(express.json({ limit: "30mb" }));
@@ -10,34 +32,30 @@ const BEARER = process.env.PROXY_BEARER || "local";
 
 // coder 在手机上可能很慢：给足时间
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 600000); // 10min
-const MAX_INFLIGHT = Number(process.env.MAX_INFLIGHT || 1);
 
-let inflight = 0;
-const queue = [];
+const MAX_INFLIGHT = Number(process.env.MAX_INFLIGHT || 1);
+const queue = new Queue(MAX_INFLIGHT);
 
 function runQueued(fn) {
-  return new Promise((resolve, reject) => {
-    queue.push({ fn, resolve, reject });
-    pump();
-  });
-}
-function pump() {
-  if (inflight >= MAX_INFLIGHT) return;
-  const job = queue.shift();
-  if (!job) return;
-  inflight++;
-  job.fn()
-    .then(job.resolve, job.reject)
-    .finally(() => {
-      inflight--;
-      pump();
-    });
+  return queue.enqueue(fn);
 }
 
+/**
+ * 检查请求的认证信息是否有效
+ * @param {express.Request} req - Express 请求对象
+ * @returns {boolean} - 认证是否通过
+ */
 function authOk(req) {
   return (req.headers.authorization || "") === `Bearer ${BEARER}`;
 }
 
+/**
+ * 将 Anthropic 格式的请求转换为 OpenAI 格式
+ * @param {Object} anth - Anthropic 格式的请求对象
+ * @param {string|Array<Object>} [anth.system] - 系统提示
+ * @param {Array<Object>} anth.messages - 消息数组
+ * @returns {Array<Object>} - OpenAI 格式的消息数组
+ */
 function anthropicToOpenAI(anth) {
   const msgs = [];
   if (anth.system) {
@@ -61,22 +79,39 @@ function anthropicToOpenAI(anth) {
   return msgs;
 }
 
-// 你机器上的模型：qwen2.5-coder / qwen3:8b / qwen3:0.6b / deepseek-r1:7b/14b ...
+// 你机器上的实际可用模型：qwen3:0.6b / qwen2.5:7b / deepseek-coder:6.7b / llama3.2:latest
+// 优化后的模型选择逻辑：合并正则表达式，减少执行次数，提高性能
+const CODE_PATTERN = /(代码|code|class|import|docker|sql|bash|python|java|js|ts|bug|报错|编译|运行)/i;
+const REASONING_PATTERN = /(证明|推导|为什么|一步一步|严谨|推理)/i;
+
+/**
+ * 根据请求内容选择合适的模型
+ * @param {string} text - 请求文本内容
+ * @returns {string} - 选择的模型名称
+ */
 function pickModel(text) {
-  // 超短非代码 → 用 0.6b 更快更稳
-  if (
-    text.length < 160 &&
-    !/(代码|code|class|import|docker|sql|bash|python|java|js|ts|bug|报错|编译|运行)/i.test(text)
-  ) return "qwen3:0.6b";
-
-  // 需要“推理/证明/一步一步” → deepseek-r1
-  if (/(证明|推导|为什么|一步一步|严谨|推理)/i.test(text)) return "deepseek-r1:7b";
-
-  // 代码/工程 → coder
-  if (/(代码|code|class|import|docker|sql|bash|python|java|js|ts|bug|报错|编译|运行)/i.test(text))
-    return "qwen2.5-coder";
-
-  return "qwen3:8b";
+  const textLength = text.length;
+  const isShortText = textLength < 160;
+  const hasCode = CODE_PATTERN.test(text);
+  const isReasoning = REASONING_PATTERN.test(text);
+  
+  // 代码/工程 → deepseek-coder (使用实际可用的模型)
+  if (hasCode) {
+    return "deepseek-coder:6.7b";
+  }
+  
+  // 需要“推理/证明/一步一步” → qwen2.5:7b (使用实际可用的模型)
+  if (isReasoning) {
+    return "qwen2.5:7b";
+  }
+  
+  // 超短非代码 → 用 0.6b 更快更稳 (已安装)
+  if (isShortText) {
+    return "qwen3:0.6b";
+  }
+  
+  // 默认使用 llama3.2:latest (已安装)
+  return "llama3.2:latest";
 }
 
 function setSSE(res) {
@@ -130,7 +165,14 @@ async function callOllamaJSON(payload) {
     let data;
     try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
     if (!r.ok) {
-      const err = new Error(`ollama_http_${r.status}`);
+      // 包含详细的错误信息在错误消息中
+      let errorMsg = `ollama_http_${r.status}`;
+      if (data?.error?.message) {
+        errorMsg += `: ${data.error.message}`;
+      } else if (txt) {
+        errorMsg += `: ${txt}`;
+      }
+      const err = new Error(errorMsg);
       err.detail = data;
       throw err;
     }
@@ -154,7 +196,8 @@ async function streamOllamaToAnthropic(res, payload, anthModelName) {
 
     if (!r.ok) {
       const txt = await r.text();
-      throw new Error(`ollama_stream_http_${r.status}: ${txt.slice(0, 400)}`);
+      // 直接返回错误，让上层错误处理逻辑处理
+      throw new Error(`ollama_stream_http_${r.status}: ${txt}`);
     }
 
     // Anthropic SSE 开场
@@ -215,32 +258,60 @@ app.get("/v1/models", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    inflight,
-    queued: queue.length,
+    inflight: queue.inflightCount,
+    queued: queue.size,
     maxInflight: MAX_INFLIGHT,
     timeoutMs: OLLAMA_TIMEOUT_MS
   });
 });
 
 app.post("/v1/messages", async (req, res) => {
-  if (!authOk(req)) return res.sendStatus(401);
+  // 速率限制检查
+  const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+  if (!rateLimit.check(clientIp)) {
+    return res.status(429).json({
+      error: {
+        type: "rate_limit_exceeded",
+        message: "Rate limit exceeded. Please try again later."
+      }
+    });
+  }
+  
+  if (!authOk(req)) {
+    return res.status(401).json({
+      error: {
+        type: "authentication_error",
+        message: "Invalid authentication credentials"
+      }
+    });
+  }
 
+  // 输入验证
   const anth = req.body || {};
+  if (!anth.messages || !Array.isArray(anth.messages)) {
+    return res.status(400).json({
+      error: {
+        type: "invalid_request_error",
+        message: "messages field is required and must be an array"
+      }
+    });
+  }
+
   const wantStream = !!anth.stream;
-
-  const msgs = anthropicToOpenAI(anth);
-  const text = msgs.map(m => m.content).join("\n");
-  const model = pickModel(text);
-
-  console.log("ROUTE →", model, "| stream:", wantStream, "| queued:", queue.length, "| inflight:", inflight);
-
-  const payload = {
-    model,
-    messages: msgs,
-    temperature: anth.temperature ?? 0.2
-  };
-
+  
   try {
+    const msgs = anthropicToOpenAI(anth);
+    const text = msgs.map(m => m.content).join("\n");
+    const model = pickModel(text);
+
+    console.log("ROUTE →", model, "| stream:", wantStream, "| queued:", queue.size, "| inflight:", queue.inflightCount);
+
+    const payload = {
+      model,
+      messages: msgs,
+      temperature: anth.temperature ?? 0.2
+    };
+
     if (wantStream) {
       // 流式时：排队后再真正开始推理并持续写回 SSE
       await runQueued(() => streamOllamaToAnthropic(res, payload, anth.model));
@@ -259,10 +330,28 @@ app.post("/v1/messages", async (req, res) => {
       stop_reason: "end_turn"
     });
   } catch (e) {
-    const msg =
-      e.name === "AbortError"
-        ? `本地模型推理超时（>${OLLAMA_TIMEOUT_MS/1000}s）。建议换小模型/缩短上下文/提高超时。`
-        : `本地模型调用失败：${e.message}`;
+    let msg = e.message;
+    let friendlyMsg = "";
+    
+    // 处理模型未找到错误 - 使用正则表达式进行不区分大小写的匹配
+    if (/model.*not found/i.test(msg)) {
+      // 直接生成友好的错误信息，不依赖于模型名称提取
+      friendlyMsg = `本地模型调用失败：模型未找到。\n\n请先使用以下命令拉取所需模型：\nollama pull qwen3:0.6b\nollama pull qwen2.5-coder\nollama pull deepseek-r1:7b\nollama pull qwen3:8b\n\n或者检查模型名称是否正确，然后再重试。`;
+    }
+    // 处理超时错误
+    else if (e.name === "AbortError") {
+      friendlyMsg = `本地模型推理超时（>${OLLAMA_TIMEOUT_MS/1000}s）。建议换小模型/缩短上下文/提高超时时间。`;
+    }
+    // 处理其他错误
+    else {
+      // 简化错误信息，移除 ollama_http_ 或 ollama_stream_http_ 前缀
+      let errorMessage = msg;
+      if (msg.startsWith("ollama_http_") || msg.startsWith("ollama_stream_http_")) {
+        errorMessage = msg.replace(/^ollama_(stream_)?http_\d+:\s*/, "");
+      }
+      
+      friendlyMsg = `本地模型调用失败：${errorMessage}`;
+    }
 
     if (wantStream) {
       // 流式错误也用 SSE 结束掉，避免 Claude Code卡死重试
@@ -272,7 +361,7 @@ app.post("/v1/messages", async (req, res) => {
         message: { id: `msg_${Date.now()}`, type: "message", role: "assistant", model: anth.model || "sonnet-4.5", content: [], stop_reason: null }
       });
       sseSend(res, { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-      sseSend(res, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: msg } });
+      sseSend(res, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: friendlyMsg } });
       sseSend(res, { type: "content_block_stop", index: 0 });
       sseSend(res, { type: "message_stop" });
       res.end();
@@ -284,9 +373,11 @@ app.post("/v1/messages", async (req, res) => {
       type: "message",
       role: "assistant",
       model: anth.model || "sonnet-4.5",
-      content: [{ type: "text", text: msg }],
+      content: [{ type: "text", text: friendlyMsg }],
       stop_reason: "end_turn"
     });
+  } finally {
+    // 清理资源（如果需要）
   }
 });
 

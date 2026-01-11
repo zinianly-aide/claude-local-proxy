@@ -40,6 +40,4 @@ function assertSafeTestCommand(cmd) {
   return trimmed;
 }
 
-module.exports = {
-  assertSafeTestCommand
-};
+export { assertSafeTestCommand };
