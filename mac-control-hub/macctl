@@ -1,0 +1,117 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+
+MAC_HOST="${MAC_HOST:-192.168.31.10}"
+MAC_PORT="${MAC_PORT:-8787}"
+MAC_KEY="${MAC_KEY:-}"
+
+if [ -z "$MAC_KEY" ]; then
+  echo "MAC_KEY is empty. export MAC_KEY=..."
+  exit 1
+fi
+
+base="http://${MAC_HOST}:${MAC_PORT}"
+
+api_post() {
+  local path="$1"
+  local json="$2"
+  curl -sS \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: ${MAC_KEY}" \
+    -d "${json}" \
+    "${base}${path}"
+}
+
+api_get() {
+  local path="$1"
+  curl -sS \
+    -H "X-API-Key: ${MAC_KEY}" \
+    "${base}${path}"
+}
+
+case "${1:-}" in
+  health)
+    api_get "/health"
+    ;;
+
+  vscode-open)
+    # usage: macctl vscode-open <repo> [file] [line] [col]
+    repo="${2:-}"
+    file="${3:-}"
+    line="${4:-null}"
+    col="${5:-null}"
+
+    if [ -z "$repo" ]; then
+      echo "usage: macctl vscode-open <repo> [file] [line] [col]"
+      exit 1
+    fi
+
+    if [ -n "$file" ]; then
+      api_post "/vscode/open" "{\"repo\":\"${repo}\",\"file\":\"${file}\",\"line\":${line},\"col\":${col}}"
+    else
+      api_post "/vscode/open" "{\"repo\":\"${repo}\"}"
+    fi
+    ;;
+
+  run)
+    # usage: macctl run <repo> <cmd> [args...]
+    repo="${2:-}"
+    cmd="${3:-}"
+    shift 3 || true
+
+    if [ -z "$repo" ] || [ -z "$cmd" ]; then
+      echo "usage: macctl run <repo> <cmd> [args...]"
+      exit 1
+    fi
+
+    # build json array of args safely enough for normal usage
+    args_json="[]"
+    if [ "$#" -gt 0 ]; then
+      # naive JSON escape for quotes/backslashes
+      esc() { echo -n "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+      args_json="["
+      first=1
+      for a in "$@"; do
+        if [ $first -eq 1 ]; then first=0; else args_json+=", "; fi
+        args_json+="\"$(esc "$a")\""
+      done
+      args_json+="]"
+    fi
+
+    api_post "/cmd/run" "{\"repo\":\"${repo}\",\"cmd\":\"${cmd}\",\"args\":${args_json}}"
+    ;;
+
+  stream)
+    # usage: macctl stream <run_id>
+    id="${2:-}"
+    if [ -z "$id" ]; then
+      echo "usage: macctl stream <run_id>"
+      exit 1
+    fi
+    curl -N -sS -H "X-API-Key: ${MAC_KEY}" "${base}/stream/${id}"
+    ;;
+
+  get)
+    # usage: macctl get <run_id>
+    id="${2:-}"
+    if [ -z "$id" ]; then
+      echo "usage: macctl get <run_id>"
+      exit 1
+    fi
+    api_get "/runs/${id}"
+    ;;
+
+  *)
+    cat <<EOF
+macctl commands:
+  health
+  vscode-open <repo> [file] [line] [col]
+  run <repo> <cmd> [args...]
+  stream <run_id>
+  get <run_id>
+
+env:
+  MAC_HOST, MAC_PORT, MAC_KEY
+EOF
+    ;;
+esac
