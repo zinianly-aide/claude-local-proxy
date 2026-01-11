@@ -22,7 +22,7 @@ const ALLOW_IPS = (process.env.ALLOW_IPS || "").split(",").map(s => s.trim()).fi
 app.use(cors());
 
 // ====== In-memory run store ======
-/** @type {Map<string, { id:string, status:'running'|'exit'|'error', startedAt:number, endedAt?:number, code?:number, signal?:string, cmd:string, cwd:string, out:string[], err:string[], exitMessage?:string, subscribers:Set<any> }>} */
+/** @type {Map<string, { id:string, status:'running'|'exit'|'error', startedAt:number, endedAt?:number, code?:number, signal?:string, cmd:string, cwd:string, out:string[], err:string[], exitMessage?:string, stopSignal?:string, stopRequestedAt?:number, process?:any, subscribers:Set<any> }>} */
 const runs = new Map();
 const MAX_LINES = 4000;
 
@@ -85,6 +85,14 @@ function assertSafePathInRepo(repoFull, relPath) {
   return full;
 }
 
+function assertSafeCwd(repoFull, relPath) {
+  const full = assertSafePathInRepo(repoFull, relPath);
+  if (!fs.existsSync(full) || !fs.statSync(full).isDirectory()) {
+    throw new Error(`cwd not found or not a directory: ${relPath}`);
+  }
+  return full;
+}
+
 // 命令白名单：只允许这些"可执行文件名"
 const ALLOWED_CMDS = new Set([
   "gemini",
@@ -111,6 +119,8 @@ function assertAllowedCmd(cmd) {
     throw new Error(`Command not allowed: ${cmd}`);
   }
 }
+
+const ALLOWED_SIGNALS = new Set(["SIGTERM", "SIGINT", "SIGKILL"]);
 
 // 参数长度限制，避免滥用
 function sanitizeArgs(args) {
@@ -162,8 +172,11 @@ app.post("/vscode/open", (req, res) => {
 // 2) cmd.run: run allowed command in repo (stream logs via SSE)
 app.post("/cmd/run", (req, res) => {
   try {
-    const { repo, cmd, args = [], env = {} } = req.body || {};
+    const { repo, cmd, args = [], env = {}, cwd } = req.body || {};
     const repoFull = assertSafeRepo(repo);
+    const safeCwd = typeof cwd === "string" && cwd.length > 0
+      ? assertSafeCwd(repoFull, cwd)
+      : repoFull;
     if (typeof cmd !== "string") throw new Error("cmd required");
     assertAllowedCmd(cmd);
     const safeArgs = sanitizeArgs(args);
@@ -185,7 +198,7 @@ app.post("/cmd/run", (req, res) => {
       status: "running",
       startedAt: Date.now(),
       cmd: `${cmd} ${safeArgs.join(" ")}`,
-      cwd: repoFull,
+      cwd: safeCwd,
       out: [],
       err: [],
       subscribers: new Set()
@@ -193,9 +206,10 @@ app.post("/cmd/run", (req, res) => {
     runs.set(id, run);
 
     const child = spawn(cmd, safeArgs, {
-      cwd: repoFull,
+      cwd: safeCwd,
       env: { ...process.env, ...safeEnv }
     });
+    run.process = child;
 
     child.stdout.on("data", (buf) => {
       const s = buf.toString("utf8");
@@ -211,6 +225,7 @@ app.post("/cmd/run", (req, res) => {
       run.status = "error";
       run.endedAt = Date.now();
       run.exitMessage = err.message || String(err);
+      run.process = null;
       for (const sub of run.subscribers) {
         sub.write(`event: end\n`);
         sub.write(`data: ${JSON.stringify({ id, status: run.status, message: run.exitMessage })}\n\n`);
@@ -224,6 +239,7 @@ app.post("/cmd/run", (req, res) => {
       run.endedAt = Date.now();
       run.code = code ?? undefined;
       run.signal = signal ?? undefined;
+      run.process = null;
 
       for (const sub of run.subscribers) {
         sub.write(`event: end\n`);
@@ -237,6 +253,23 @@ app.post("/cmd/run", (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message || String(e) });
   }
+});
+
+app.post("/runs/:id/stop", (req, res) => {
+  const id = req.params.id;
+  const run = runs.get(id);
+  if (!run) return res.status(404).json({ error: "not found" });
+  if (run.status !== "running" || !run.process) {
+    return res.json({ ok: false, id, status: run.status, message: "not running" });
+  }
+  const signal = typeof req.body?.signal === "string" ? req.body.signal : "SIGTERM";
+  if (!ALLOWED_SIGNALS.has(signal)) {
+    return res.status(400).json({ error: `Signal not allowed: ${signal}` });
+  }
+  const ok = run.process.kill(signal);
+  run.stopSignal = signal;
+  run.stopRequestedAt = Date.now();
+  res.json({ ok, id, status: run.status, signal });
 });
 
 // 3) stream logs: Server-Sent Events (SSE)
@@ -275,6 +308,30 @@ app.get("/stream/:id", (req, res) => {
 });
 
 // 4) get result (pull)
+app.get("/runs", (req, res) => {
+  const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 200) : 50;
+  const status = typeof req.query.status === "string" ? req.query.status : undefined;
+  if (status && !["running", "exit", "error"].includes(status)) {
+    return res.status(400).json({ error: `Invalid status: ${status}` });
+  }
+  const runsList = Array.from(runs.values())
+    .filter((run) => (status ? run.status === status : true))
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .slice(0, limit)
+    .map((run) => ({
+      id: run.id,
+      status: run.status,
+      startedAt: run.startedAt,
+      endedAt: run.endedAt,
+      code: run.code,
+      signal: run.signal,
+      cmd: run.cmd,
+      cwd: run.cwd
+    }));
+  res.json({ runs: runsList });
+});
+
 app.get("/runs/:id", (req, res) => {
   const id = req.params.id;
   const run = runs.get(id);
@@ -286,6 +343,8 @@ app.get("/runs/:id", (req, res) => {
     endedAt: run.endedAt,
     code: run.code,
     signal: run.signal,
+    stopSignal: run.stopSignal,
+    stopRequestedAt: run.stopRequestedAt,
     cmd: run.cmd,
     cwd: run.cwd,
     out: run.out.slice(-500),

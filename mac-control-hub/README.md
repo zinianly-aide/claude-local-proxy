@@ -5,9 +5,11 @@
 ## 功能
 
 - `vscode-open` - 在 Mac 上用 VS Code 打开仓库/文件
-- `run` - 在指定仓库运行白名单命令（含 gemini）
+- `run` - 在指定仓库运行白名单命令（支持 `--cwd` 子目录）
 - `stream` - SSE 实时日志流
 - `get` - 获取命令最终结果
+- `runs` - 列出最近运行记录
+- `stop` - 终止执行中的任务
 
 ---
 
@@ -26,8 +28,11 @@
 | 打开仓库 | `macctl vscode-open <repo>` |
 | 打开文件到指定行 | `macctl vscode-open <repo> <file> <line>` |
 | 运行 gemini | `macctl run <repo> gemini <args...>` |
+| 子目录运行 | `macctl run <repo> --cwd packages/app npm test` |
 | 实时输出 | `macctl stream <run_id>` |
 | 获取结果 | `macctl get <run_id>` |
+| 查看列表 | `macctl runs [limit] [status]` |
+| 停止任务 | `macctl stop <run_id> [signal]` |
 
 ---
 

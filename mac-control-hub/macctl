@@ -64,11 +64,17 @@ case "${1:-}" in
       exit 1
     fi
 
+    cwd=""
+    if [ "${1:-}" = "--cwd" ]; then
+      cwd="${2:-}"
+      shift 2 || true
+    fi
+
+    esc() { echo -n "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
     # build json array of args safely enough for normal usage
     args_json="[]"
     if [ "$#" -gt 0 ]; then
-      # naive JSON escape for quotes/backslashes
-      esc() { echo -n "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
       args_json="["
       first=1
       for a in "$@"; do
@@ -78,7 +84,12 @@ case "${1:-}" in
       args_json+="]"
     fi
 
-    api_post "/cmd/run" "{\"repo\":\"${repo}\",\"cmd\":\"${cmd}\",\"args\":${args_json}}"
+    payload="{\"repo\":\"$(esc "$repo")\",\"cmd\":\"$(esc "$cmd")\",\"args\":${args_json}"
+    if [ -n "$cwd" ]; then
+      payload+=",\"cwd\":\"$(esc "$cwd")\""
+    fi
+    payload+="}"
+    api_post "/cmd/run" "${payload}"
     ;;
 
   stream)
@@ -101,14 +112,41 @@ case "${1:-}" in
     api_get "/runs/${id}"
     ;;
 
+  runs)
+    # usage: macctl runs [limit] [status]
+    limit="${2:-}"
+    status="${3:-}"
+    qs=""
+    if [ -n "$limit" ]; then
+      qs="?limit=${limit}"
+    fi
+    if [ -n "$status" ]; then
+      qs="${qs}${qs:+&}status=${status}"
+    fi
+    api_get "/runs${qs}"
+    ;;
+
+  stop)
+    # usage: macctl stop <run_id> [signal]
+    id="${2:-}"
+    signal="${3:-SIGTERM}"
+    if [ -z "$id" ]; then
+      echo "usage: macctl stop <run_id> [signal]"
+      exit 1
+    fi
+    api_post "/runs/${id}/stop" "{\"signal\":\"${signal}\"}"
+    ;;
+
   *)
     cat <<EOF
 macctl commands:
   health
   vscode-open <repo> [file] [line] [col]
-  run <repo> <cmd> [args...]
+  run <repo> <cmd> [--cwd <subdir>] [args...]
   stream <run_id>
   get <run_id>
+  runs [limit] [status]
+  stop <run_id> [signal]
 
 env:
   MAC_HOST, MAC_PORT, MAC_KEY

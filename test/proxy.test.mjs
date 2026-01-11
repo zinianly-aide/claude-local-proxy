@@ -56,23 +56,23 @@ test("pickModel selects smaller model for short non-code prompts", () => {
 });
 
 test("pickModel selects coder model for code prompts", () => {
-  assert.equal(pickModel("帮我修复这个 js bug"), "qwen2.5-coder");
+  assert.equal(pickModel("帮我修复这个 js bug"), "deepseek-coder:6.7b");
 });
 
 test("pickModel selects reasoning model for reasoning prompts", () => {
-  assert.equal(pickModel("请证明勾股定理"), "deepseek-r1:7b");
-  assert.equal(pickModel("为什么天空是蓝色的？"), "deepseek-r1:7b");
-  assert.equal(pickModel("一步一步教我如何做蛋糕"), "deepseek-r1:7b");
+  assert.equal(pickModel("请证明勾股定理"), "qwen2.5:7b");
+  assert.equal(pickModel("为什么天空是蓝色的？"), "qwen2.5:7b");
+  assert.equal(pickModel("一步一步教我如何做蛋糕"), "qwen2.5:7b");
 });
 
 test("pickModel selects default model for long non-code prompts", () => {
   const longText = "这是一段很长的文本，" + "重复多次来达到长度要求。".repeat(20);
-  assert.equal(pickModel(longText), "qwen3:8b");
+  assert.equal(pickModel(longText), "llama3.2:latest");
 });
 
 test("pickModel selects coder model for code-related keywords", () => {
-  assert.equal(pickModel("帮我写一个 python 脚本"), "qwen2.5-coder");
-  assert.equal(pickModel("修复这个 java 编译错误"), "qwen2.5-coder");
-  assert.equal(pickModel("docker 配置文件怎么写？"), "qwen2.5-coder");
-  assert.equal(pickModel("这个 sql 查询有问题吗？"), "qwen2.5-coder");
+  assert.equal(pickModel("帮我写一个 python 脚本"), "deepseek-coder:6.7b");
+  assert.equal(pickModel("修复这个 java 编译错误"), "deepseek-coder:6.7b");
+  assert.equal(pickModel("docker 配置文件怎么写？"), "deepseek-coder:6.7b");
+  assert.equal(pickModel("这个 sql 查询有问题吗？"), "deepseek-coder:6.7b");
 });
