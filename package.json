@@ -5,6 +5,8 @@
   "main": "proxy.mjs",
   "scripts": {
     "start": "node proxy.mjs",
+    "start:mcp": "node opencode-mcp-server.mjs",
+    "mcp-pipeline": "node src/server.ts",
     "test": "node --test"
   },
   "keywords": [],
@@ -12,7 +14,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2",
     "express": "^5.2.1",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "ws": "^8.19.0",
+    "zod": "^4.3.5"
   }
 }
