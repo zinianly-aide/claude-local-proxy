@@ -1,5 +1,6 @@
 import express from "express";
 import fetch from "node-fetch";
+import { pathToFileURL } from "url";
 
 const app = express();
 app.use(express.json({ limit: "30mb" }));
@@ -211,6 +212,16 @@ app.get("/v1/models", (req, res) => {
   });
 });
 
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    inflight,
+    queued: queue.length,
+    maxInflight: MAX_INFLIGHT,
+    timeoutMs: OLLAMA_TIMEOUT_MS
+  });
+});
+
 app.post("/v1/messages", async (req, res) => {
   if (!authOk(req)) return res.sendStatus(401);
 
@@ -279,7 +290,13 @@ app.post("/v1/messages", async (req, res) => {
   }
 });
 
-app.listen(8787, "127.0.0.1", () => {
-  console.log("✅ Claude-local proxy (streaming) listening on http://127.0.0.1:8787");
-  console.log("   timeout:", OLLAMA_TIMEOUT_MS, "ms | max_inflight:", MAX_INFLIGHT);
-});
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMain) {
+  app.listen(8787, "127.0.0.1", () => {
+    console.log("✅ Claude-local proxy (streaming) listening on http://127.0.0.1:8787");
+    console.log("   timeout:", OLLAMA_TIMEOUT_MS, "ms | max_inflight:", MAX_INFLIGHT);
+  });
+}
+
+export { anthropicToOpenAI, pickModel };
